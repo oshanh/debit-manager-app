@@ -44,8 +44,6 @@ export default function BackupsScreen() {
     try {
       setInitializing(true);
       
-      // HARDCODED for now - we can make this configurable later via env vars
-      // This is needed because after prebuild, Constants.expoConfig may not have the extra config
       const webClientId = '188962916113-ga5ve15f5mvqv8smpkrieth2hk47vsua.apps.googleusercontent.com';
       
       console.log('[InitGoogleDrive] Using webClientId:', webClientId);
@@ -326,7 +324,8 @@ export default function BackupsScreen() {
           <ActivityIndicator size="large" color="#3b82f6" />
           <Text style={styles.loadingText}>Initializing...</Text>
         </View>
-      ) : isRestoring ? (
+      ) : <></>}
+      {isRestoring ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#3b82f6" />
           <Text style={styles.loadingText}>Restoring backup...</Text>
@@ -334,7 +333,9 @@ export default function BackupsScreen() {
             App will reload automatically
           </Text>
         </View>
-      ) : (
+      ) : <></> }
+
+      {(!initializing) && (!isRestoring)  ? (
         <>
           {/* Google Drive Sign In/Out Section */}
           <View style={styles.section}>
@@ -425,11 +426,12 @@ export default function BackupsScreen() {
         </Text>
         {loading ? (
           <ActivityIndicator style={styles.loader} />
-        ) : driveBackups.length === 0 ? (
+        ) : <></>}
+        {!loading && driveBackups.length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="cloud-offline-outline" size={48} color="#d1d5db" />
             <Text style={styles.emptyText}>
-              {isSignedIn ? 'No backups in Google Drive yet' : 'Sign in to Google Drive in About tab'}
+              {isSignedIn ? 'No backups in Google Drive yet' : 'Sign in to Google Drive to see backups'}
             </Text>
           </View>
         ) : (
@@ -498,7 +500,7 @@ export default function BackupsScreen() {
         </Text>
       </View>
         </>
-      )}
+      ):<></>}
     </ScrollView>
   );
 }

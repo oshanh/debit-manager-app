@@ -3,7 +3,7 @@ import { useDebtors } from '@/database/useDebtors';
 import { Debtor } from '@/types/debtor';
 import { Link, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View ,RefreshControl} from 'react-native';
 
 export default function DebtorsScreen() {
   const { debtors, loading, error, reload } = useDebtors();
@@ -38,7 +38,8 @@ export default function DebtorsScreen() {
           </View>
         </View>
         <View style={styles.arrowContainer}>
-          <Text style={styles.arrowText}>›</Text>
+          <Text style={styles.arrowText}>››</Text>
+          
         </View>
       </TouchableOpacity>
     </Link>
@@ -77,8 +78,13 @@ export default function DebtorsScreen() {
           renderItem={renderDebtor}
           keyExtractor={(item) => item.id.toString()}
           contentContainerStyle={styles.listContainer}
-        />
-      )}
+          refreshControl={
+            <RefreshControl
+              refreshing={loading}
+              onRefresh={reload}
+            />
+          }
+        />)}
 
       {/* Floating Add Button */}
       <TouchableOpacity
@@ -130,7 +136,7 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   debtorCard: {
-    backgroundColor: '#23272f',
+    backgroundColor: '#1a1d21',
     borderRadius: 16,
     padding: 18,
     marginBottom: 14,
@@ -149,10 +155,10 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: '#0606fab6',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#0a7ea4',
+    shadowColor: '#3b82f6',
     shadowOpacity: 0.2,
     shadowRadius: 4,
   },
@@ -203,7 +209,7 @@ const styles = StyleSheet.create({
   },
   arrowText: {
     fontSize: 32,
-    color: '#0a7ea4',
+    color: '#00bfffff',
     fontWeight: '300',
   },
   loadingText: {
@@ -227,7 +233,7 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   fabInner: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: '#0808dbff',
     width: 60,
     height: 60,
     borderRadius: 30,
