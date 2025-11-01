@@ -3,8 +3,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, Easing, Modal, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { backupNow, getLastBackupTimestamp, resolveDatabasePath } from '../../utils/backupV2';
 import {
   getAccessToken,
@@ -35,6 +35,8 @@ export default function BackupsScreen() {
   const [initializing, setInitializing] = useState(true);
   const [isRestoring, setIsRestoring] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalType, setModalType] = useState<'drive' | 'local' | null>(null);
 
   useEffect(() => {
     initGoogleDrive();
@@ -43,11 +45,11 @@ export default function BackupsScreen() {
   const initGoogleDrive = async () => {
     try {
       setInitializing(true);
-      
+
       const webClientId = '188962916113-ga5ve15f5mvqv8smpkrieth2hk47vsua.apps.googleusercontent.com';
-      
+
       console.log('[InitGoogleDrive] Using webClientId:', webClientId);
-      
+
       // Only initialize if webClientId is available
       if (webClientId) {
         // Initialize Google Drive
@@ -304,7 +306,20 @@ export default function BackupsScreen() {
       }
     };
 
-  return (
+    // Prepare sorted lists for rendering: newest first
+    const sortedDriveBackups = [...driveBackups].sort((a, b) => {
+      const ta = a?.createdTime ? new Date(a.createdTime).getTime() : 0;
+      const tb = b?.createdTime ? new Date(b.createdTime).getTime() : 0;
+      return tb - ta;
+    });
+
+    const sortedLocalBackups = [...localBackups].sort((a, b) => {
+      const ta = a?.modificationTime ? (a.modificationTime * 1000) : 0;
+      const tb = b?.modificationTime ? (b.modificationTime * 1000) : 0;
+      return tb - ta;
+    });
+
+    return (
     <ScrollView
       style={styles.container}
       refreshControl={
@@ -368,7 +383,7 @@ export default function BackupsScreen() {
             ) : (
               <>
                 <Text style={styles.infoText}>
-                  Sign in to automatically backup your data to Google Drive and access backups from any device.
+                  Sign in to backup your data to Google Drive and access backups from any device.
                 </Text>
                 <TouchableOpacity
                   style={[styles.actionButton, styles.signInButton]}
@@ -435,17 +450,24 @@ export default function BackupsScreen() {
             </Text>
           </View>
         ) : (
-          driveBackups.map((item) => (
-            <View key={item.id} style={styles.backupCard}>
-              <View style={styles.backupHeader}>
-                <Ionicons name="cloud-done-outline" size={20} color="#10b981" />
-                <Text style={styles.backupName}>{item.name}</Text>
+          <>
+            {sortedDriveBackups.slice(0, 3).map((item) => (
+              <View key={item.id} style={styles.backupCard}>
+                <View style={styles.backupHeader}>
+                  <Ionicons name="cloud-done-outline" size={20} color="#10b981" />
+                  <Text style={styles.backupName}>{item.name}</Text>
+                </View>
+                <Text style={styles.backupMeta}>
+                  📅 {item.createdTime ? new Date(item.createdTime).toLocaleString() : '-'}
+                </Text>
               </View>
-              <Text style={styles.backupMeta}>
-                📅 {item.createdTime ? new Date(item.createdTime).toLocaleString() : '-'}
-              </Text>
-            </View>
-          ))
+            ))}
+            {sortedDriveBackups.length > 3 && (
+              <TouchableOpacity style={styles.showMoreButton} onPress={() => { setModalType('drive'); setModalVisible(true); }}>
+                <Text style={styles.showMoreText}>{`Show older backups (${sortedDriveBackups.length - 3})`}</Text>
+              </TouchableOpacity>
+            )}
+          </>
         )}
       </View>
 
@@ -456,23 +478,31 @@ export default function BackupsScreen() {
         </Text>
         {loading ? (
           <ActivityIndicator style={styles.loader} />
-        ) : localBackups.length === 0 ? (
+        ) :<></>}
+        {!loading && localBackups.length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="folder-open-outline" size={48} color="#d1d5db" />
             <Text style={styles.emptyText}>No local backups found</Text>
           </View>
         ) : (
-          localBackups.map((item) => (
-            <View key={item.name} style={styles.backupCard}>
-              <View style={styles.backupHeader}>
-                <Ionicons name="document-outline" size={20} color="#6b7280" />
-                <Text style={styles.backupName}>{item.name}</Text>
+          <>
+            {sortedLocalBackups.slice(0, 3).map((item) => (
+              <View key={item.name} style={styles.backupCard}>
+                <View style={styles.backupHeader}>
+                  <Ionicons name="document-outline" size={20} color="#6b7280" />
+                  <Text style={styles.backupName}>{item.name}</Text>
+                </View>
+                <Text style={styles.backupMeta}>
+                  💾 {(item.size / 1024).toFixed(1)} KB • {item.modificationTime ? new Date(item.modificationTime * 1000).toLocaleString() : '-'}
+                </Text>
               </View>
-              <Text style={styles.backupMeta}>
-                💾 {(item.size / 1024).toFixed(1)} KB • {item.modificationTime ? new Date(item.modificationTime * 1000).toLocaleString() : '-'}
-              </Text>
-            </View>
-          ))
+            ))}
+            {sortedLocalBackups.length > 3 && (
+              <TouchableOpacity style={styles.showMoreButton} onPress={() => { setModalType('local'); setModalVisible(true); }}>
+                <Text style={styles.showMoreText}>{`Show older backups (${sortedLocalBackups.length - 3})`}</Text>
+              </TouchableOpacity>
+            )}
+          </>
         )}
       </View>
 
@@ -496,12 +526,98 @@ export default function BackupsScreen() {
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>
-          💡 Tip: Sign in above to enable automatic cloud backups
+          💡 Tip: Sign in above to enable cloud backups
         </Text>
       </View>
         </>
       ):<></>}
+
+      {/* Backups modal (shows full list when user requests older backups) */}
+      <BackupsModal
+        visible={modalVisible}
+        onClose={() => setModalVisible(false)}
+        type={modalType}
+        driveItems={sortedDriveBackups}
+        localItems={sortedLocalBackups}
+      />
     </ScrollView>
+  );
+}
+
+// Modal component rendered outside main return for clarity
+function BackupsModal(props: Readonly<{
+  visible: boolean;
+  onClose: () => void;
+  type: 'drive' | 'local' | null;
+  driveItems: any[];
+  localItems: any[];
+}>) {
+  const { visible, onClose, type, driveItems, localItems } = props;
+  const items = type === 'drive' ? driveItems : localItems;
+
+  const [mounted, setMounted] = useState(visible);
+  const overlayAnim = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  const contentAnim = useRef(new Animated.Value(visible ? 1 : 0)).current;
+
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      Animated.parallel([
+        Animated.timing(overlayAnim, { toValue: 1, duration: 200, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.timing(contentAnim, { toValue: 1, duration: 250, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      ]).start();
+    } else {
+      Animated.parallel([
+        Animated.timing(contentAnim, { toValue: 0, duration: 160, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+        Animated.timing(overlayAnim, { toValue: 0, duration: 180, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+      ]).start(() => setMounted(false));
+    }
+  }, [visible, overlayAnim, contentAnim]);
+
+  const overlayStyle = { opacity: overlayAnim };
+  const contentScale = contentAnim.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] });
+  const contentStyle = { opacity: contentAnim, transform: [{ scale: contentScale }] };
+
+  if (!mounted) return null;
+
+  return (
+    <Modal visible={mounted} animationType="none" transparent={true} onRequestClose={onClose}>
+      <Animated.View style={[styles.modalOverlay, overlayStyle]}>
+        <Animated.View style={[styles.modalContent, contentStyle]}>
+          <View style={styles.modalHandle} />
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>{type === 'drive' ? 'Google Drive Backups' : 'Local Backups'}</Text>
+            <TouchableOpacity onPress={onClose} style={styles.modalCloseButton}>
+              <Ionicons name="close" size={18} color="#9ca3af" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.modalDivider} />
+          <ScrollView style={styles.modalList}>
+            {items.length === 0 ? (
+              <View style={styles.modalEmpty}>
+                <Text style={styles.emptyText}>No backups found</Text>
+              </View>
+            ) : (
+              items.map((item: any) => {
+                const displayDate = item.createdTime
+                  ? new Date(item.createdTime).toLocaleString()
+                  : item.modificationTime
+                  ? new Date(item.modificationTime * 1000).toLocaleString()
+                  : '-';
+                return (
+                  <View key={item.id ?? item.name} style={styles.modalItem}>
+                    <View style={styles.modalItemRow}>
+                      <Text style={styles.modalItemName} numberOfLines={1} ellipsizeMode="tail">{item.name}</Text>
+                      <Text style={styles.modalItemMeta}>{displayDate}</Text>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
+        </Animated.View>
+      </Animated.View>
+    </Modal>
   );
 }
 
@@ -716,6 +832,87 @@ const styles = StyleSheet.create({
   advancedText: {
     fontSize: 14,
     color: '#9ca3af',
+  },
+  listContainer: {
+    // Show approximately 3 backup cards, allow internal scrolling for older items
+    maxHeight: 220,
+    marginTop: 8,
+  },
+  listScroll: {
+    paddingRight: 8,
+  },
+  showMoreButton: {
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  showMoreText: {
+    color: '#2563eb',
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  modalContent: {
+    width: '100%',
+    maxHeight: '80%',
+    backgroundColor: '#25292e',
+    borderRadius: 12,
+    padding: 16,
+  },
+  modalHandle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 4,
+    backgroundColor: '#374151',
+    marginBottom: 12,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  modalDivider: {
+    height: 1,
+    backgroundColor: '#374151',
+    marginTop: 12,
+  },
+  modalList: {
+    marginTop: 8,
+  },
+  modalEmpty: {
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  modalItemRow: {
+    flexDirection: 'column',
+  },
+  modalItemName: {
+    fontSize: 14,
+    color: '#f9fafb',
+    fontWeight: '600',
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#f9fafb',
+  },
+  modalCloseButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  modalItem: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#374151',
+  },
+  modalItemMeta: {
+    color: '#9ca3af',
+    marginTop: 4,
   },
   errorCard: {
     flexDirection: 'row',
