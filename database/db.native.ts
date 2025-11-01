@@ -141,9 +141,12 @@ export async function refreshSQLiteProvider(): Promise<boolean> {
 // imports that resolve to this file still expose the function expected by callers.
 export function notifyProviderRemounted(ok = true): void {
   try {
-    // Dynamically require to avoid circular static imports during module init
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const core = require('./db');
+    // Dynamically require the shared core implementation by explicit filename to
+    // avoid Metro's platform resolution (which would resolve './db' back to
+    // this platform file and cause recursion). Using the explicit './db.ts'
+    // filename ensures we load the non-platform shared file.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const core = require('./db.ts');
     // If the bundler/platform resolution caused './db' to resolve back to this
     // platform file, avoid calling into ourselves which would cause recursion.
     if (core === exports || core.notifyProviderRemounted === notifyProviderRemounted) {

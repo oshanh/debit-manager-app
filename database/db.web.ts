@@ -114,7 +114,7 @@ export async function refreshSQLiteProvider(): Promise<boolean> {
 export function notifyProviderRemounted(ok = true): void {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const core = require('./db');
+      const core = require('./db.ts');
     if (core === exports || core.notifyProviderRemounted === notifyProviderRemounted) {
       console.warn('[DB(web)] notifyProviderRemounted: core resolved to platform file, skipping to avoid recursion');
       return;
