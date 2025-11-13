@@ -127,7 +127,7 @@ export function notifyProviderRemounted(ok = true) {
     // or for any final provider initialization steps to settle before callers retry.
     const waiters = remountWaiters.slice();
     remountWaiters = [];
-    const STABILIZE_MS = 300; // small delay to reduce racing retries
+  const STABILIZE_MS = 1000; // small delay to reduce racing retries (increased to allow native handles to stabilize)
     setTimeout(() => {
       for (const r of waiters) {
         try {

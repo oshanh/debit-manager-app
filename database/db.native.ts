@@ -92,7 +92,35 @@ export async function refreshSQLiteProvider(): Promise<boolean> {
     return false;
   }
   lastNativeRefresh = now;
+
   try {
+    // Run the checkpoint/close helper synchronously so file handles are
+    // released before we request the React provider to remount. This ordering
+    // reduces races where the provider mounts while native handles still hold
+    // the DB open, which can lead to NullPointerExceptions in the native
+    // module.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const expoSqlite: any = require('expo-sqlite');
+    const openAsync = expoSqlite.openDatabaseAsync ?? expoSqlite.openDatabase;
+    if (typeof openAsync === 'function') {
+      const candidates = ['debitmanager.db', 'debitmanager'];
+      for (const name of candidates) {
+        try {
+          const dbHandle = await openAsync(name);
+          if (!dbHandle) continue;
+          try { if (dbHandle.execAsync) await dbHandle.execAsync("PRAGMA wal_checkpoint(TRUNCATE);"); } catch (e) { console.warn('[DB(native)] checkpoint failed for', name, e); }
+          try { if (dbHandle.closeAsync) await dbHandle.closeAsync(); } catch (e) { console.warn('[DB(native)] closeAsync failed for', name, e); }
+          console.log('[DB(native)] refreshSQLiteProvider: opened and checkpointed', name);
+          // continue to attempt other candidates to fully release handles
+        } catch (e) {
+          console.warn('[DB(native)] open failed for', name, e);
+          continue;
+        }
+      }
+    }
+
+    // Now request the provider remount so the React-side provider opens a
+    // fresh SQLite instance after native handles were released.
     if (providerRemountCallbackNative) {
       providerRemountCallbackNative();
       console.log('[DB(native)] refreshSQLiteProvider: requested provider remount');
@@ -100,39 +128,15 @@ export async function refreshSQLiteProvider(): Promise<boolean> {
       console.warn('[DB(native)] refreshSQLiteProvider: no remount callback registered');
     }
 
-    // Kick off the async checkpoint helper but don't await it here.
-    void (async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const expoSqlite: any = require('expo-sqlite');
-        const openAsync = expoSqlite.openDatabaseAsync ?? expoSqlite.openDatabase;
-        if (typeof openAsync !== 'function') return;
-
-        const candidates = ['debitmanager', 'debitmanager.db'];
-        for (const name of candidates) {
-          try {
-            const dbHandle = await openAsync(name);
-            if (!dbHandle) continue;
-            try { if (dbHandle.execAsync) await dbHandle.execAsync("PRAGMA wal_checkpoint(TRUNCATE);"); } catch (e) { console.warn('[DB(native)] checkpoint failed for', name, e); }
-            try { if (dbHandle.closeAsync) await dbHandle.closeAsync(); } catch (e) { console.warn('[DB(native)] closeAsync failed for', name, e); }
-            console.log('[DB(native)] refreshSQLiteProvider: opened and checkpointed', name);
-            break;
-          } catch (e) {
-            console.warn('[DB(native)] open failed for', name, e);
-            continue;
-          }
-        }
-      } catch (e) {
-        console.warn('[DB(native)] refreshSQLiteProvider async helper failed:', e);
-      }
-    })();
-
-    // Wait briefly to allow the provider remount flow to complete via RootLayout's onInit
     // Consumers should call the Promise returned by db.refreshSQLiteProvider() and retry afterwards.
     // We resolve true here; more precise completion is signaled by notifyProviderRemounted from layout.
     return true;
   } catch (e) {
-    console.error('[DB(native)] refreshSQLiteProvider: error calling remount callback', e);
+    console.error('[DB(native)] refreshSQLiteProvider: error during checkpoint/remount flow', e);
+    // Still try to request a provider remount even if checkpoint failed
+    if (providerRemountCallbackNative) {
+      try { providerRemountCallbackNative(); console.log('[DB(native)] refreshSQLiteProvider: requested provider remount (after error)'); } catch {}
+    }
     return false;
   }
 }

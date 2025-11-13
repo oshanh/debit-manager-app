@@ -95,89 +95,97 @@ function timestamp(): string {
 
 export async function backupDatabase(): Promise<{ uri: string }> {
   let dbPath = await resolveDatabasePath();
-  // If resolveDatabasePath returned a bare filename, prefer the .db variant if it exists
-  try {
-    const candidateDb = dbPath.endsWith('.db') ? dbPath : `${dbPath}.db`;
-    const info = await FileSystem.getInfoAsync(candidateDb);
-    if (info.exists && !info.isDirectory) {
-      console.log('[Backup] Prefer canonical .db source:', candidateDb);
-      dbPath = candidateDb;
-    }
-  } catch {}
-  // Try to flush WAL and close DB to ensure a consistent main DB file.
-  // Use the centralized helper in database/db.ts which attempts the open/checkpoint/close.
-  let didFlush = false;
-  try {
-    if (typeof closeDatabaseHandlesForBackup === 'function') {
-      try {
-        didFlush = await closeDatabaseHandlesForBackup();
-      } catch (err) {
-        console.warn('[Backup] closeDatabaseHandlesForBackup failed:', err);
-      }
-    } else {
-      console.warn('[Backup] closeDatabaseHandlesForBackup not available at runtime');
-    }
-  } catch {
-    // defensive: any unexpected error here should not block backup
-    console.warn('[Backup] Unexpected error while attempting to close DB handles');
-  }
-  if (didFlush === false) {
-    console.log('[Backup] Could not open DB to checkpoint WAL. Proceeding with copy.');
-  } else {
-    // small delay to ensure file handles released
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  // If we resolved to the bare filename (no .db), try to create a canonical .db copy
-  if (!dbPath.endsWith('.db')) {
-    const candidateDb = `${dbPath}.db`;
+
+  // Prefer canonical .db when possible
+  const preferCanonical = async (path: string): Promise<string> => {
     try {
-      // Attempt to copy the bare file to the .db variant so backups are always of debitmanager.db
-      await FileSystem.copyAsync({ from: dbPath, to: candidateDb });
+      const candidateDb = path.endsWith('.db') ? path : `${path}.db`;
+      const info = await FileSystem.getInfoAsync(candidateDb);
+      if (info.exists && !info.isDirectory) {
+        console.log('[Backup] Prefer canonical .db source:', candidateDb);
+        return candidateDb;
+      }
+    } catch {}
+    return path;
+  };
+
+  const flushAndClose = async (): Promise<boolean> => {
+    let didFlush = false;
+    try {
+      if (typeof closeDatabaseHandlesForBackup === 'function') {
+        try {
+          didFlush = await closeDatabaseHandlesForBackup();
+        } catch (err) {
+          console.warn('[Backup] closeDatabaseHandlesForBackup failed:', err);
+        }
+      } else {
+        console.warn('[Backup] closeDatabaseHandlesForBackup not available at runtime');
+      }
+    } catch {
+      console.warn('[Backup] Unexpected error while attempting to close DB handles');
+    }
+    if (didFlush) await new Promise((r) => setTimeout(r, 150));
+    return didFlush;
+  };
+
+  const ensureCanonicalCopyFromBare = async (path: string): Promise<string> => {
+    if (path.endsWith('.db')) return path;
+    const candidateDb = `${path}.db`;
+    try {
+      await FileSystem.copyAsync({ from: path, to: candidateDb });
       console.log('[Backup] Copied bare DB to canonical .db for backup:', candidateDb);
-      dbPath = candidateDb;
+      return candidateDb;
     } catch (e) {
       console.warn('[Backup] Failed to copy bare DB to .db; proceeding with original source:', e);
+      return path;
     }
-  }
-  await FileSystem.makeDirectoryAsync(BACKUP_DIR, { intermediates: true });
+  };
+
+  const copyBackupAndAttachments = async (source: string, destPath: string) => {
+    await FileSystem.makeDirectoryAsync(BACKUP_DIR, { intermediates: true });
+    try {
+      const info = await FileSystem.getInfoAsync(source);
+      console.log('[Backup] Source DB info:', JSON.stringify(info));
+    } catch {}
+    await FileSystem.copyAsync({ from: source, to: destPath });
+    // copy WAL/SHM if present
+    try {
+      const walSrc = `${source}-wal`;
+      const shmSrc = `${source}-shm`;
+      const walInfo = await FileSystem.getInfoAsync(walSrc).catch(() => ({ exists: false }));
+      const shmInfo = await FileSystem.getInfoAsync(shmSrc).catch(() => ({ exists: false }));
+      if (walInfo.exists) {
+        try {
+          await FileSystem.copyAsync({ from: walSrc, to: `${destPath}-wal` });
+          console.log('[Backup] Copied WAL alongside backup:', `${destPath}-wal`);
+        } catch (e) {
+          console.warn('[Backup] Failed to copy WAL file:', e);
+        }
+      }
+      if (shmInfo.exists) {
+        try {
+          await FileSystem.copyAsync({ from: shmSrc, to: `${destPath}-shm` });
+          console.log('[Backup] Copied SHM alongside backup:', `${destPath}-shm`);
+        } catch (e) {
+          console.warn('[Backup] Failed to copy SHM file:', e);
+        }
+      }
+    } catch (e) {
+      console.warn('[Backup] error checking/copying WAL/SHM:', e);
+    }
+    try {
+      const info = await FileSystem.getInfoAsync(destPath);
+      console.log('[Backup] Backup file info:', JSON.stringify(info));
+    } catch {}
+  };
+
+  // Orchestrate
+  dbPath = await preferCanonical(dbPath);
+  const didFlush = await flushAndClose();
+  if (!didFlush) console.log('[Backup] Could not open DB to checkpoint WAL. Proceeding with copy.');
+  dbPath = await ensureCanonicalCopyFromBare(dbPath);
   const dest = `${BACKUP_DIR}debitmanager-${timestamp()}.db`;
-  // Log source info
-  try {
-    const info = await FileSystem.getInfoAsync(dbPath);
-    console.log('[Backup] Source DB info:', JSON.stringify(info));
-  } catch {}
-  await FileSystem.copyAsync({ from: dbPath, to: dest });
-  // If the source had WAL/SHM files, copy them alongside the backup so the
-  // backup preserves any uncheckpointed recent writes.
-  try {
-    const walSrc = `${dbPath}-wal`;
-    const shmSrc = `${dbPath}-shm`;
-    const walInfo = await FileSystem.getInfoAsync(walSrc).catch(() => ({ exists: false }));
-    const shmInfo = await FileSystem.getInfoAsync(shmSrc).catch(() => ({ exists: false }));
-    if (walInfo.exists) {
-      try {
-        await FileSystem.copyAsync({ from: walSrc, to: `${dest}-wal` });
-        console.log('[Backup] Copied WAL alongside backup:', `${dest}-wal`);
-      } catch (e) {
-        console.warn('[Backup] Failed to copy WAL file:', e);
-      }
-    }
-    if (shmInfo.exists) {
-      try {
-        await FileSystem.copyAsync({ from: shmSrc, to: `${dest}-shm` });
-        console.log('[Backup] Copied SHM alongside backup:', `${dest}-shm`);
-      } catch (e) {
-        console.warn('[Backup] Failed to copy SHM file:', e);
-      }
-    }
-  } catch (e) {
-    console.warn('[Backup] error checking/copying WAL/SHM:', e);
-  }
-  try {
-    const info = await FileSystem.getInfoAsync(dest);
-    console.log('[Backup] Backup file info:', JSON.stringify(info));
-  } catch {}
-  
+  await copyBackupAndAttachments(dbPath, dest);
   return { uri: dest };
 }
 
