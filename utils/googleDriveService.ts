@@ -20,24 +20,26 @@ export async function restoreLatestBackupFromGoogleDrive(destinationUri: string)
     const tempInfo = await FileSystem.getInfoAsync(tempFile);
     console.log('[Restore] Temp file info:', JSON.stringify(tempInfo));
     console.log('[Restore] Downloaded. Copying to DB:', destinationUri);
-    // Overwrite the DB file with the downloaded backup
+    // Overwrite the DB file with the downloaded backup (canonical .db path)
     await FileSystem.copyAsync({ from: tempFile, to: destinationUri });
     const destInfo = await FileSystem.getInfoAsync(destinationUri);
     console.log('[Restore] Destination info after copy:', JSON.stringify(destInfo));
 
-    // Also copy to alternate filename variant (with/without .db) to cover both cases
-    const altDestination = destinationUri.endsWith('.db')
-      ? destinationUri.slice(0, -3)
-      : `${destinationUri}.db`;
+    // Ensure we do NOT create or keep the alternate bare filename variant.
+    // If an alternate exists (e.g. "debitmanager"), remove it to keep a single canonical .db.
+    const altDestination = destinationUri.endsWith('.db') ? destinationUri.slice(0, -3) : `${destinationUri}.db`;
     if (altDestination !== destinationUri) {
       try {
-        await FileSystem.copyAsync({ from: tempFile, to: altDestination });
-        const altInfo = await FileSystem.getInfoAsync(altDestination);
-        console.log('[Restore] Alt destination info after copy:', JSON.stringify(altInfo));
+        await FileSystem.deleteAsync(altDestination, { idempotent: true });
+        console.log('[Restore] Removed alternate destination if existed:', altDestination);
       } catch (e) {
-        console.log('[Restore] Copy to alt destination failed (ok to continue):', e);
+        console.log('[Restore] Failed removing alternate destination (ok to continue):', e);
       }
     }
+
+    // Remove any WAL/SHM files for the canonical path to avoid stale state
+    try { await FileSystem.deleteAsync(`${destinationUri}-wal`, { idempotent: true }); } catch {}
+    try { await FileSystem.deleteAsync(`${destinationUri}-shm`, { idempotent: true }); } catch {}
 
     console.log('[Restore] Copied. Deleting temp file.');
     // Optionally, delete the temp file

@@ -1,11 +1,29 @@
-import { closeDatabaseHandlesForBackup } from '@/database/db';
+// Resolve the shared DB helper explicitly to avoid Metro/platform resolution
+// picking up the platform proxy file (db.native.ts) which doesn't export
+// closeDatabaseHandlesForBackup. Try the shared core file first, then fall
+// back to the alias if necessary.
+let closeDatabaseHandlesForBackup: (() => Promise<boolean>) | undefined;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const coreDb = require('../database/db.ts');
+  closeDatabaseHandlesForBackup = coreDb?.closeDatabaseHandlesForBackup;
+} catch {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const aliased = require('@/database/db');
+    closeDatabaseHandlesForBackup = aliased?.closeDatabaseHandlesForBackup;
+  } catch {
+    console.warn('[Backup] Could not resolve closeDatabaseHandlesForBackup');
+    closeDatabaseHandlesForBackup = undefined;
+  }
+}
 import * as FileSystem from 'expo-file-system/legacy';
 import 'expo-sqlite';
 import {
-    getAccessToken,
-    getOrCreateBackupFolder,
-    isSignedInToGoogleDrive,
-    uploadFileToGoogleDrive,
+  getAccessToken,
+  getOrCreateBackupFolder,
+  isSignedInToGoogleDrive,
+  uploadFileToGoogleDrive,
 } from './googleDriveService';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const Sharing: any = require('expo-sharing');
@@ -16,7 +34,8 @@ const DOC_DIR = FileSystem.documentDirectory ?? FileSystem.cacheDirectory ?? '';
 const SQLITE_DIR = `${DOC_DIR}SQLite/`;
 const BACKUP_DIR = `${DOC_DIR}backups/`;
 const META_FILE = `${DOC_DIR}backup_meta.json`;
-const DB_CANDIDATES = ['debitmanager', 'debitmanager.db'];
+// Prefer the canonical .db filename when present
+const DB_CANDIDATES = ['debitmanager.db', 'debitmanager'];
 
 async function ensureDir(uri: string) {
   try {
@@ -55,25 +74,70 @@ export async function resolveDatabasePath(): Promise<string> {
 
 function timestamp(): string {
   const d = new Date();
+  // utc iso for debug
   const iso = d.toISOString();
-  return iso.replaceAll(':', '-').replaceAll('.', '-');
+  // Build a local-time timestamp suitable for filenames: YYYY-MM-DDTHH-mm-ss+ZZZZ (offset without colon)
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const minutes = pad(d.getMinutes());
+  const seconds = pad(d.getSeconds());
+  const tzOffsetMinutes = -d.getTimezoneOffset(); // minutes east of UTC
+  const tzSign = tzOffsetMinutes >= 0 ? '+' : '-';
+  const tzHours = pad(Math.floor(Math.abs(tzOffsetMinutes) / 60));
+  const tzMins = pad(Math.abs(tzOffsetMinutes) % 60);
+  const localStamp = `${year}-${month}-${day}T${hours}-${minutes}-${seconds}${tzSign}${tzHours}${tzMins}`;
+  console.log('Generated timestamp (UTC):', iso, 'Generated timestamp (local):', localStamp);
+  return localStamp;
 }
 
 export async function backupDatabase(): Promise<{ uri: string }> {
-  const dbPath = await resolveDatabasePath();
+  let dbPath = await resolveDatabasePath();
+  // If resolveDatabasePath returned a bare filename, prefer the .db variant if it exists
+  try {
+    const candidateDb = dbPath.endsWith('.db') ? dbPath : `${dbPath}.db`;
+    const info = await FileSystem.getInfoAsync(candidateDb);
+    if (info.exists && !info.isDirectory) {
+      console.log('[Backup] Prefer canonical .db source:', candidateDb);
+      dbPath = candidateDb;
+    }
+  } catch {}
   // Try to flush WAL and close DB to ensure a consistent main DB file.
   // Use the centralized helper in database/db.ts which attempts the open/checkpoint/close.
   let didFlush = false;
   try {
-    didFlush = await closeDatabaseHandlesForBackup();
-  } catch (e) {
-    console.warn('[Backup] closeDatabaseHandlesForBackup failed:', e);
+    if (typeof closeDatabaseHandlesForBackup === 'function') {
+      try {
+        didFlush = await closeDatabaseHandlesForBackup();
+      } catch (err) {
+        console.warn('[Backup] closeDatabaseHandlesForBackup failed:', err);
+      }
+    } else {
+      console.warn('[Backup] closeDatabaseHandlesForBackup not available at runtime');
+    }
+  } catch {
+    // defensive: any unexpected error here should not block backup
+    console.warn('[Backup] Unexpected error while attempting to close DB handles');
   }
   if (didFlush === false) {
     console.log('[Backup] Could not open DB to checkpoint WAL. Proceeding with copy.');
   } else {
     // small delay to ensure file handles released
     await new Promise((r) => setTimeout(r, 150));
+  }
+  // If we resolved to the bare filename (no .db), try to create a canonical .db copy
+  if (!dbPath.endsWith('.db')) {
+    const candidateDb = `${dbPath}.db`;
+    try {
+      // Attempt to copy the bare file to the .db variant so backups are always of debitmanager.db
+      await FileSystem.copyAsync({ from: dbPath, to: candidateDb });
+      console.log('[Backup] Copied bare DB to canonical .db for backup:', candidateDb);
+      dbPath = candidateDb;
+    } catch (e) {
+      console.warn('[Backup] Failed to copy bare DB to .db; proceeding with original source:', e);
+    }
   }
   await FileSystem.makeDirectoryAsync(BACKUP_DIR, { intermediates: true });
   const dest = `${BACKUP_DIR}debitmanager-${timestamp()}.db`;
@@ -83,6 +147,32 @@ export async function backupDatabase(): Promise<{ uri: string }> {
     console.log('[Backup] Source DB info:', JSON.stringify(info));
   } catch {}
   await FileSystem.copyAsync({ from: dbPath, to: dest });
+  // If the source had WAL/SHM files, copy them alongside the backup so the
+  // backup preserves any uncheckpointed recent writes.
+  try {
+    const walSrc = `${dbPath}-wal`;
+    const shmSrc = `${dbPath}-shm`;
+    const walInfo = await FileSystem.getInfoAsync(walSrc).catch(() => ({ exists: false }));
+    const shmInfo = await FileSystem.getInfoAsync(shmSrc).catch(() => ({ exists: false }));
+    if (walInfo.exists) {
+      try {
+        await FileSystem.copyAsync({ from: walSrc, to: `${dest}-wal` });
+        console.log('[Backup] Copied WAL alongside backup:', `${dest}-wal`);
+      } catch (e) {
+        console.warn('[Backup] Failed to copy WAL file:', e);
+      }
+    }
+    if (shmInfo.exists) {
+      try {
+        await FileSystem.copyAsync({ from: shmSrc, to: `${dest}-shm` });
+        console.log('[Backup] Copied SHM alongside backup:', `${dest}-shm`);
+      } catch (e) {
+        console.warn('[Backup] Failed to copy SHM file:', e);
+      }
+    }
+  } catch (e) {
+    console.warn('[Backup] error checking/copying WAL/SHM:', e);
+  }
   try {
     const info = await FileSystem.getInfoAsync(dest);
     console.log('[Backup] Backup file info:', JSON.stringify(info));

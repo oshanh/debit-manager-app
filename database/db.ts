@@ -154,7 +154,12 @@ export async function closeDatabaseHandlesForBackup(): Promise<boolean> {
     const openAsync = expoSqlite.openDatabaseAsync ?? expoSqlite.openDatabase;
     if (typeof openAsync !== 'function') return false;
 
-    const candidates = ['debitmanager', 'debitmanager.db'];
+    // Prefer the canonical `.db` filename first so we checkpoint the file
+    // that most app code uses. Also attempt both candidates rather than
+    // returning after the first success — this ensures any stray handles on
+    // the alternate filename are also released.
+    const candidates = ['debitmanager.db', 'debitmanager'];
+    let anySuccess = false;
     for (const name of candidates) {
       try {
         const dbHandle = await openAsync(name);
@@ -170,13 +175,14 @@ export async function closeDatabaseHandlesForBackup(): Promise<boolean> {
           console.warn('[DB] closeAsync failed for', name, e);
         }
         console.log('[DB] closeDatabaseHandlesForBackup: opened and checkpointed', name);
-        return true;
+        anySuccess = true;
+        // continue to next candidate to attempt releasing other handles
       } catch {
         // try next candidate
         continue;
       }
     }
-    return false;
+    return anySuccess;
   } catch (e) {
     console.warn('[DB] closeDatabaseHandlesForBackup failed:', e);
     return false;

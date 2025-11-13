@@ -5,7 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Easing, Modal, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { backupNow, getLastBackupTimestamp, resolveDatabasePath } from '../../utils/backupV2';
+import { backupDatabase, backupNow, getLastBackupTimestamp, resolveDatabasePath } from '../../utils/backupV2';
 import {
   getAccessToken,
   getCurrentUser,
@@ -207,7 +207,41 @@ export default function BackupsScreen() {
 
   const handleRestoreBackup = async () => {
       setIsRestoring(true);
+      let preRestoreSnapshot: string | null = null;
       try {
+        // Before creating a pre-restore snapshot, attempt to checkpoint WAL and
+        // close any native SQLite handles so the main .db file contains all
+        // recent writes (otherwise a simple copy may miss WAL contents).
+        try {
+          // Try to resolve the shared core DB helper directly to avoid platform
+          // proxy resolution which may not export the helper.
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const coreDb = require('../../database/db.ts');
+          const cb = coreDb?.closeDatabaseHandlesForBackup;
+          if (typeof cb === 'function') {
+            try {
+              console.log('[Restore] Running closeDatabaseHandlesForBackup before snapshot...');
+              const ok = await cb();
+              console.log('[Restore] closeDatabaseHandlesForBackup result:', ok);
+            } catch (err) {
+              console.warn('[Restore] closeDatabaseHandlesForBackup failed:', err);
+            }
+          } else {
+            console.warn('[Restore] closeDatabaseHandlesForBackup not available on core DB');
+          }
+        } catch (e) {
+          console.warn('[Restore] Could not resolve core DB helper for checkpoint:', e);
+        }
+
+        // Create a pre-restore snapshot so we can recover if the restore fails.
+        try {
+          console.log('[Restore] Creating pre-restore snapshot...');
+          const snap = await backupDatabase();
+          preRestoreSnapshot = snap?.uri ?? null;
+          console.log('[Restore] Pre-restore snapshot saved at', preRestoreSnapshot);
+        } catch (e) {
+          console.warn('[Restore] Pre-restore snapshot creation failed (continuing):', e);
+        }
         // Flush and close DB before overwriting the file
         try {
           console.log('[Restore] Running WAL checkpoint before close...');
@@ -228,7 +262,8 @@ export default function BackupsScreen() {
         const SQLITE_DIR = `${DOC_DIR}SQLite/`;
         // Determine the actual DB file currently used on this device
         const DB_PATH = await resolveDatabasePath();
-        const ALT_DB_PATH = DB_PATH.endsWith('.db') ? DB_PATH.slice(0, -3) : `${DB_PATH}.db`;
+        // Prefer the canonical .db filename for restores
+        const CANONICAL_DB_PATH = DB_PATH.endsWith('.db') ? DB_PATH : `${DB_PATH}.db`;
         console.log('[Restore] SQLite dir:', SQLITE_DIR);
         try {
           const listing = await FileSystem.readDirectoryAsync(SQLITE_DIR);
@@ -236,33 +271,25 @@ export default function BackupsScreen() {
         } catch (e) {
           console.log('[Restore] Failed to list SQLite dir BEFORE:', e);
         }
-    const beforeInfo = await FileSystem.getInfoAsync(DB_PATH);
-    console.log('[Restore] DB_PATH used for restore:', DB_PATH, 'info:', JSON.stringify(beforeInfo));
-    try { console.log('[Restore] ALT_DB_PATH:', ALT_DB_PATH, 'info:', JSON.stringify(await FileSystem.getInfoAsync(ALT_DB_PATH))); } catch {}
-  
-        // Ensure no leftover files before restore
-        for (const p of [DB_PATH, ALT_DB_PATH]) {
-          try { await FileSystem.deleteAsync(p, { idempotent: true }); } catch {}
-          try { await FileSystem.deleteAsync(`${p}-wal`, { idempotent: true }); } catch {}
-          try { await FileSystem.deleteAsync(`${p}-shm`, { idempotent: true }); } catch {}
-        }
-  
-        // Try Google Drive restore first
+    try { const beforeInfo = await FileSystem.getInfoAsync(CANONICAL_DB_PATH); console.log('[Restore] Target canonical DB for restore:', CANONICAL_DB_PATH, 'info:', JSON.stringify(beforeInfo)); } catch {}
+
+        // NOTE: Do NOT remove existing DB files before attempting restore. Removing
+        // them preemptively can cause irreversible data loss if the restore fails
+        // or the user cancels. Instead we restore into a temp file (the Google
+        // Drive helper already downloads into a temp) and only replace the
+        // canonical DB after a successful restore.
+
+        // Try Google Drive restore first (restore into canonical .db path)
         const signedIn = await isSignedInToGoogleDrive();
         if (signedIn) {
-          const ok = await restoreLatestBackupFromGoogleDrive(DB_PATH);
+          const ok = await restoreLatestBackupFromGoogleDrive(CANONICAL_DB_PATH);
           if (ok) {
-            // Also copy to alternate filename variant to cover both (with and without .db)
-            if (ALT_DB_PATH !== DB_PATH) {
-              try {
-                await FileSystem.copyAsync({ from: DB_PATH, to: ALT_DB_PATH });
-                console.log('[Restore] Also copied to ALT path:', ALT_DB_PATH);
-              } catch (e) {
-                console.log('[Restore] Skipped copying to ALT path:', ALT_DB_PATH, e);
-              }
+            // After successful restore, ensure the bare DB (without .db) is removed so only CANONICAL_DB_PATH remains
+            if (CANONICAL_DB_PATH !== DB_PATH) {
+              try { await FileSystem.deleteAsync(DB_PATH, { idempotent: true }); } catch {}
             }
             // Remove any WAL/SHM files to prevent stale state
-            const walCandidates = [DB_PATH, ALT_DB_PATH];
+            const walCandidates = [CANONICAL_DB_PATH, DB_PATH];
             for (const p of walCandidates) {
               try { await FileSystem.deleteAsync(`${p}-wal`, { idempotent: true }); } catch {}
               try { await FileSystem.deleteAsync(`${p}-shm`, { idempotent: true }); } catch {}
@@ -271,14 +298,12 @@ export default function BackupsScreen() {
               const listingAfter = await FileSystem.readDirectoryAsync(SQLITE_DIR);
               console.log('[Restore] SQLite listing AFTER:', listingAfter);
             } catch {}
-            const afterInfo = await FileSystem.getInfoAsync(DB_PATH);
-            console.log('[Restore] DB_PATH AFTER restore info:', JSON.stringify(afterInfo));
-            try { console.log('[Restore] ALT_DB_PATH AFTER restore info:', JSON.stringify(await FileSystem.getInfoAsync(ALT_DB_PATH))); } catch {}
-            
+            try { const afterInfo = await FileSystem.getInfoAsync(CANONICAL_DB_PATH); console.log('[Restore] CANONICAL_DB_PATH AFTER restore info:', JSON.stringify(afterInfo)); } catch {}
+
             // Reload immediately to prevent "Access to closed resource" errors
             console.log('[Restore] Reloading app immediately...');
             await reloadApp();
-            
+
             return;
           }
         }
@@ -290,19 +315,71 @@ export default function BackupsScreen() {
         });
         if (!result?.assets?.[0]?.uri || result.canceled) return;
         const uri = result.assets[0].uri;
-        await FileSystem.copyAsync({ from: uri, to: DB_PATH });
-        if (ALT_DB_PATH !== DB_PATH) {
-          try { await FileSystem.copyAsync({ from: DB_PATH, to: ALT_DB_PATH }); } catch {}
+        // Copy into a temp file first, then move into the canonical location.
+        // This avoids deleting the live DB until we have a complete restored file.
+        const tempRestore = `${CANONICAL_DB_PATH}.restore.tmp`;
+        try {
+          await FileSystem.copyAsync({ from: uri, to: tempRestore });
+          // Move into place (overwrite)
+          try {
+            await FileSystem.moveAsync({ from: tempRestore, to: CANONICAL_DB_PATH });
+          } catch (e) {
+            // Some environments may not support moveAsync across filesystems; fallback to copy+delete
+            await FileSystem.copyAsync({ from: tempRestore, to: CANONICAL_DB_PATH });
+            await FileSystem.deleteAsync(tempRestore, { idempotent: true });
+          }
+          if (CANONICAL_DB_PATH !== DB_PATH) {
+            try { await FileSystem.deleteAsync(DB_PATH, { idempotent: true }); } catch {}
+          }
+          try { await FileSystem.deleteAsync(`${CANONICAL_DB_PATH}-wal`, { idempotent: true }); } catch {}
+          try { await FileSystem.deleteAsync(`${CANONICAL_DB_PATH}-shm`, { idempotent: true }); } catch {}
+        } catch (e: any) {
+          console.warn('[Restore] Local file restore failed, leaving existing DB intact:', e);
+          // If restore fails, do not delete existing DB. Surface error to user.
+          throw e;
         }
-        try { await FileSystem.deleteAsync(`${DB_PATH}-wal`, { idempotent: true }); } catch {}
-        try { await FileSystem.deleteAsync(`${DB_PATH}-shm`, { idempotent: true }); } catch {}
         
         // Reload immediately to prevent "Access to closed resource" errors
         console.log('[Restore] Reloading app immediately...');
         await reloadApp();
       } catch (e: any) {
+        console.warn('[Restore] failed:', e);
+        // Attempt to roll back from the pre-restore snapshot if available
+        if (preRestoreSnapshot) {
+          try {
+            console.log('[Restore] Attempting rollback from pre-restore snapshot:', preRestoreSnapshot);
+            // Recompute canonical path (best-effort) to copy snapshot back
+            const DOC_DIR = FileSystem.documentDirectory ?? FileSystem.cacheDirectory ?? '';
+            const SQLITE_DIR = `${DOC_DIR}SQLite/`;
+            let targetPath: string;
+            try {
+              const current = await resolveDatabasePath();
+              targetPath = current.endsWith('.db') ? current : `${current}.db`;
+            } catch {
+              // Fallback to canonical path when resolve fails
+              targetPath = `${SQLITE_DIR}debitmanager.db`;
+            }
+            // Copy snapshot back into place
+            const tmp = `${targetPath}.rollback.tmp`;
+            await FileSystem.copyAsync({ from: preRestoreSnapshot, to: tmp });
+            try {
+              await FileSystem.moveAsync({ from: tmp, to: targetPath });
+            } catch {
+              await FileSystem.copyAsync({ from: tmp, to: targetPath });
+              await FileSystem.deleteAsync(tmp, { idempotent: true });
+            }
+            console.log('[Restore] Rollback complete, reloading app...');
+            await reloadApp();
+            Alert.alert('Restore failed', 'Restore failed but pre-restore snapshot was restored.');
+            return;
+          } catch (error_) {
+            console.warn('[Restore] rollback from snapshot failed:', error_);
+            Alert.alert('Restore failed', `Restore failed and rollback also failed: ${String(error_)}`);
+          }
+        } else {
+          Alert.alert('Restore failed', e?.message ?? 'Unknown error');
+        }
         setIsRestoring(false);
-        Alert.alert('Restore failed', e?.message ?? 'Unknown error');
       }
     };
 

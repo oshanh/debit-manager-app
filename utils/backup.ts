@@ -1,6 +1,6 @@
 // Use untyped requires to avoid strict/obsolete TS signatures issues across SDKs
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const FileSystem: any = require('expo-file-system');
+const FileSystem: any = require('expo-file-system/legacy');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const Sharing: any = require('expo-sharing');
 // eslint-disable-next-line @typescript-eslint/no-var-requires

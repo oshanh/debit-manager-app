@@ -1,4 +1,5 @@
 import { getSQLiteProvider, logDbStatus, migrateDbIfNeeded, notifyProviderRemounted, registerSQLiteProviderRemount } from "@/database/db";
+import * as FileSystem from 'expo-file-system/legacy';
 import { Stack } from "expo-router";
 import { createContext, Suspense, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
@@ -34,7 +35,7 @@ function ProviderWithLogs({ children }: Readonly<{ children: React.ReactNode }>)
 
   return (
     <SQLiteProvider
-      databaseName="debitmanager"
+      databaseName="debitmanager.db"
       useSuspense
       onInit={async (db: any) => {
         console.log('[DB] onInit begin');
@@ -56,6 +57,7 @@ function ProviderWithLogs({ children }: Readonly<{ children: React.ReactNode }>)
 
 export default function RootLayout() {
   const [dbKey, setDbKey] = useState(0);
+  const [migrationDone, setMigrationDone] = useState(false);
   
   const refreshDb = useCallback(() => {
     console.log('[DB] Manual refresh triggered, remounting provider...');
@@ -70,7 +72,72 @@ export default function RootLayout() {
     });
   }, [refreshDb]);
 
+  // One-time migration: if a bare `debitmanager` file exists and `debitmanager.db` does not,
+  // rename/move the bare file to the canonical `.db` filename. Also move WAL/SHM if present.
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+  const DOC_DIR = FileSystem.documentDirectory ?? FileSystem.cacheDirectory ?? '';
+        const SQLITE_DIR = `${DOC_DIR}SQLite/`;
+        const bare = `${SQLITE_DIR}debitmanager`;
+        const canonical = `${SQLITE_DIR}debitmanager.db`;
+
+        const bareInfo = await FileSystem.getInfoAsync(bare).catch(() => ({ exists: false }));
+        const canonicalInfo = await FileSystem.getInfoAsync(canonical).catch(() => ({ exists: false }));
+
+        if (bareInfo.exists && !canonicalInfo.exists) {
+          console.log('[DB:MIGRATE] Found bare DB and no canonical .db - migrating to debitmanager.db');
+          try {
+            await FileSystem.moveAsync({ from: bare, to: canonical });
+            console.log('[DB:MIGRATE] moved', bare, '->', canonical);
+          } catch (e) {
+            console.warn('[DB:MIGRATE] failed to move main file, attempting copy+delete fallback', e);
+            try {
+              await FileSystem.copyAsync({ from: bare, to: canonical });
+              await FileSystem.deleteAsync(bare, { idempotent: true });
+              console.log('[DB:MIGRATE] copy+delete fallback succeeded');
+            } catch (e2) {
+              console.warn('[DB:MIGRATE] copy+delete fallback failed:', e2);
+            }
+          }
+
+          // Move WAL/SHM files if present
+          for (const suffix of ['-wal', '-shm']) {
+            const from = `${bare}${suffix}`;
+            const to = `${canonical}${suffix}`;
+            const info = await FileSystem.getInfoAsync(from).catch(() => ({ exists: false }));
+            if (info.exists) {
+              try {
+                await FileSystem.moveAsync({ from, to });
+                console.log('[DB:MIGRATE] moved', from, '->', to);
+              } catch (e) {
+                console.warn('[DB:MIGRATE] failed to move', from, '->', to, e);
+                try {
+                  await FileSystem.copyAsync({ from, to });
+                  await FileSystem.deleteAsync(from, { idempotent: true });
+                  console.log('[DB:MIGRATE] copy+delete fallback for', from, 'succeeded');
+                } catch (e2) {
+                  console.warn('[DB:MIGRATE] copy+delete fallback for', from, 'failed:', e2);
+                }
+              }
+            }
+          }
+        } else {
+          console.log('[DB:MIGRATE] No migration needed. bare.exists=', !!bareInfo.exists, 'canonical.exists=', !!canonicalInfo.exists);
+        }
+      } catch (e) {
+        console.warn('[DB:MIGRATE] unexpected error during DB filename migration:', e);
+      } finally {
+        if (mounted) setMigrationDone(true);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
   const contextValue = useMemo(() => ({ refreshDb }), [refreshDb]);
+
+  if (!migrationDone) return <LoadingFallback />;
 
   return (
     <Suspense fallback={<LoadingFallback />}>
