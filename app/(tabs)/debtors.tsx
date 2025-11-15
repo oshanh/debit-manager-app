@@ -2,12 +2,25 @@ import AddDebtorModal from '@/components/AddDebtorModal';
 import { useDebtors } from '@/database/useDebtors';
 import { Debtor } from '@/types/debtor';
 import { Link, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View ,RefreshControl} from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 export default function DebtorsScreen() {
   const { debtors, loading, error, reload } = useDebtors();
   const [modalVisible, setModalVisible] = useState(false);
+  const [query, setQuery] = useState('');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const filteredDebtors = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let list = debtors ?? [];
+    if (q.length > 0) {
+      list = list.filter((d) => d.name.toLowerCase().includes(q));
+    }
+    if (sortOrder === 'asc') {
+      return [...list].sort((a, b) => a.balance - b.balance);
+    }
+    return [...list].sort((a, b) => b.balance - a.balance);
+  }, [debtors, query, sortOrder]);
 
   // Reload debtors whenever screen comes into focus
   useFocusEffect(
@@ -64,17 +77,55 @@ export default function DebtorsScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Debtors</Text>
-        <Text style={styles.subtitle}>Total: {debtors.length}</Text>
+        <Text style={styles.subtitle}>Total: {filteredDebtors.length}</Text>
+        <View style={styles.searchContainer}>
+          <View style={styles.searchRow}>
+            <View style={styles.searchInputWrap}>
+              <TextInput
+                placeholder="Search debtors..."
+                placeholderTextColor="#9ba1a6"
+                value={query}
+                onChangeText={setQuery}
+                style={styles.searchInput}
+                returnKeyType="search"
+              />
+              {query.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => setQuery('')}
+                  style={styles.clearButton}
+                  accessibilityLabel="Clear search"
+                >
+                  <Text style={styles.clearButtonText}>×</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          <View style={styles.segmentedContainer}>
+            <TouchableOpacity
+              style={[styles.segment, sortOrder === 'desc' && styles.segmentActive]}
+              onPress={() => setSortOrder('desc')}
+            >
+              <Text style={[styles.segmentText, sortOrder === 'desc' && styles.segmentTextActive]}>High ↓</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.segment, sortOrder === 'asc' && styles.segmentActive]}
+              onPress={() => setSortOrder('asc')}
+            >
+              <Text style={[styles.segmentText, sortOrder === 'asc' && styles.segmentTextActive]}>Low ↑</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
 
-      {debtors.length === 0 ? (
+      {filteredDebtors.length === 0 ? (
         <View style={styles.centerContainer}>
-          <Text style={styles.emptyText}>No debtors found</Text>
-          <Text style={styles.emptySubtext}>Add your first debtor to get started</Text>
+          <Text style={styles.emptyText}>{debtors.length === 0 ? 'No debtors found' : 'No debtors match'}</Text>
+          {debtors.length === 0 && <Text style={styles.emptySubtext}>Add your first debtor to get started</Text>}
         </View>
       ) : (
         <FlatList
-          data={debtors}
+          data={filteredDebtors}
           renderItem={renderDebtor}
           keyExtractor={(item) => item.id.toString()}
           contentContainerStyle={styles.listContainer}
@@ -249,5 +300,90 @@ const styles = StyleSheet.create({
     fontSize: 36,
     fontWeight: 'bold',
     marginTop: -2,
+  },
+  searchContainer: {
+    marginTop: 12,
+    width: '100%',
+    paddingHorizontal: 4,
+    gap: 8,
+  },
+  searchInput: {
+    backgroundColor: '#1a1d21',
+    color: '#fff',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    fontSize: 16,
+  },
+  sortContainer: {
+    marginTop: 8,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  sortButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#101216',
+  },
+  sortButtonActive: {
+    backgroundColor: '#0b61f6',
+  },
+  sortButtonText: {
+    color: '#9ba1a6',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  sortButtonTextActive: {
+    color: '#fff',
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  searchInputWrap: {
+    position: 'relative',
+    width: '100%',
+  },
+  clearButton: {
+    position: 'absolute',
+    right: 8,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0b61f6',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  clearButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    lineHeight: 16,
+  },
+  segmentedContainer: {
+    flexDirection: 'row',
+    marginTop: 10,
+    backgroundColor: '#0f1113',
+    borderRadius: 12,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+  },
+  segment: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    backgroundColor: 'transparent',
+  },
+  segmentActive: {
+    backgroundColor: '#0b61f6',
+  },
+  segmentText: {
+    color: '#9ba1a6',
+    fontWeight: '600',
+  },
+  segmentTextActive: {
+    color: '#fff',
   },
 });
