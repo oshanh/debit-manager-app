@@ -1,6 +1,7 @@
 import AddDebtorModal from '@/components/AddDebtorModal';
 import { useDebtors } from '@/database/useDebtors';
 import { Debtor } from '@/types/debtor';
+import { Ionicons } from '@expo/vector-icons';
 import { Link, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -101,19 +102,17 @@ export default function DebtorsScreen() {
             </View>
           </View>
 
-          <View style={styles.segmentedContainer}>
-            <TouchableOpacity
-              style={[styles.segment, sortOrder === 'desc' && styles.segmentActive]}
-              onPress={() => setSortOrder('desc')}
-            >
-              <Text style={[styles.segmentText, sortOrder === 'desc' && styles.segmentTextActive]}>High ↓</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.segment, sortOrder === 'asc' && styles.segmentActive]}
-              onPress={() => setSortOrder('asc')}
-            >
-              <Text style={[styles.segmentText, sortOrder === 'asc' && styles.segmentTextActive]}>Low ↑</Text>
-            </TouchableOpacity>
+          <View style={styles.filtersRow}>
+            <View style={styles.segmentedContainer}>
+              {/* Single toggle: pressing flips between desc (High→Low) and asc (Low→High) */}
+              <TouchableOpacity
+                style={[styles.segmentIconWrap, sortOrder === 'desc' && styles.segmentActive]}
+                onPress={() => setSortOrder((s) => (s === 'desc' ? 'asc' : 'desc'))}
+                accessibilityLabel={sortOrder === 'desc' ? 'Currently High to Low. Tap to switch to Low to High' : 'Currently Low to High. Tap to switch to High to Low'}
+              >
+                <Ionicons name={sortOrder === 'desc' ? 'arrow-down-outline' : 'arrow-up-outline'} size={18} color={sortOrder === 'desc' ? '#fff' : '#9ba1a6'} />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </View>
@@ -307,6 +306,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     gap: 8,
   },
+  filtersRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 8,
+    paddingRight: 8,
+  },
   searchInput: {
     backgroundColor: '#1a1d21',
     color: '#fff',
@@ -365,16 +370,21 @@ const styles = StyleSheet.create({
   },
   segmentedContainer: {
     flexDirection: 'row',
-    marginTop: 10,
-    backgroundColor: '#0f1113',
+    marginLeft: 8,
+    marginTop: 0,
+    backgroundColor: 'transparent',
     borderRadius: 12,
     overflow: 'hidden',
-    alignSelf: 'flex-start',
+    alignSelf: 'flex-end',
   },
-  segment: {
+  segmentIconWrap: {
     paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    marginLeft: 6,
     backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   segmentActive: {
     backgroundColor: '#0b61f6',

@@ -76,7 +76,7 @@ function timestamp(): string {
   const d = new Date();
   // utc iso for debug
   const iso = d.toISOString();
-  // Build a local-time timestamp suitable for filenames: YYYY-MM-DDTHH-mm-ss+ZZZZ (offset without colon)
+  // Build a human-friendly local timestamp for filenames: YYYY-MM-DD_HH-mm-ss
   const pad = (n: number) => String(n).padStart(2, '0');
   const year = d.getFullYear();
   const month = pad(d.getMonth() + 1);
@@ -84,12 +84,8 @@ function timestamp(): string {
   const hours = pad(d.getHours());
   const minutes = pad(d.getMinutes());
   const seconds = pad(d.getSeconds());
-  const tzOffsetMinutes = -d.getTimezoneOffset(); // minutes east of UTC
-  const tzSign = tzOffsetMinutes >= 0 ? '+' : '-';
-  const tzHours = pad(Math.floor(Math.abs(tzOffsetMinutes) / 60));
-  const tzMins = pad(Math.abs(tzOffsetMinutes) % 60);
-  const localStamp = `${year}-${month}-${day}T${hours}-${minutes}-${seconds}${tzSign}${tzHours}${tzMins}`;
-  console.log('Generated timestamp (UTC):', iso, 'Generated timestamp (local):', localStamp);
+  const localStamp = `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`;
+  console.log('Generated timestamp (UTC):', iso, 'Generated human timestamp (local):', localStamp);
   return localStamp;
 }
 

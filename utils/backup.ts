@@ -37,8 +37,15 @@ export async function resolveDatabasePath(): Promise<string> {
 
 function timestamp(): string {
   const d = new Date();
-  const iso = d.toISOString();
-  return iso.replaceAll(':', '-').replaceAll('.', '-');
+  // Human-friendly local timestamp for filenames: YYYY-MM-DD_HH-mm-ss
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const minutes = pad(d.getMinutes());
+  const seconds = pad(d.getSeconds());
+  return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`;
 }
 
 export async function backupDatabase(): Promise<{ uri: string }> {
